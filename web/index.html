@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Qwen3-0.6B DSpark — training</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Qwen3-0.6B DSpark — drafter training</h1>
+  <span class="sub"><span class="dot"></span>live · <span id="ts">…</span></span>
+  <span class="sub">auto-refresh 15 s</span>
+</header>
+<main>
+  <div id="root"><div class="empty">loading…</div></div>
+</main>
+
+<script src="charts.js"></script>
+<script>
+/* Smoothing state. The 15 s refresh replaces #root's innerHTML but does NOT
+   re-execute this script, so a module-level binding survives between renders
+   and the slider keeps its position. */
+let SMOOTH = 20;
+const smoothSpan = () => SMOOTH;
+function setSmooth(v){ SMOOTH = Math.max(1, Math.min(60, Math.round(+v) || 1)); tick(); }
+
+/* In-epoch step counter + ETA. steps/epoch and seconds/epoch are derived
+   server-side from the trainer's own global_step records and checkpoint
+   mtimes, because profile/step_ms overstates the true rate by 30-70% here.
+   fmtDur() lives in charts.js. */
+function epochBarHTML(run){
+  const p = run && run.progress;
+  if(!p) return "";
+  // clamp defensively: a bad step derivation must never emit a negative CSS width
+  const pc = Math.max(0, Math.min(100, 100*(p.frac || 0))).toFixed(1);
+  const validating = p.phase === "validating";
+  const left = validating
+    ? `epoch <b style="color:var(--fg)">${p.epoch}</b> complete ·
+       <span class="st-warn">validating…</span>`
+    : `epoch <b style="color:var(--fg)">${p.epoch}</b> ·
+       step <span class="mono" style="color:var(--fg)">${p.local_step} / ${p.epoch_steps}</span>
+       <span class="mono">(${pc}%)</span>`;
+  const right = validating
+    ? `next epoch ≈ ${fmtDur(p.epoch_secs)}`
+    : `ETA this epoch <b style="color:var(--fg)">${fmtDur(p.eta_secs)}</b>
+       · epoch ≈ ${fmtDur(p.epoch_secs)}`;
+  return `
+  <div style="margin:10px 0 2px">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+                font-size:12.5px;color:var(--dim)">
+      <span>${left}</span><span>${right}</span>
+    </div>
+    <div style="height:8px;background:var(--panel2);border-radius:5px;overflow:hidden;margin-top:6px">
+      <div style="height:100%;width:${pc}%;border-radius:5px;
+                  background:${validating ? "#d29922" : "linear-gradient(90deg,#4c9be8,#3fb950)"}"></div>
+    </div>
+  </div>`;
+}
+
+function trainingHTML(t, activeRun){
+  if(!t || !t.runs || !t.runs.length)
+    return `<div class="panel"><h2>Training</h2>
+            <div class="empty">no val_metrics.json yet — training has not
+            completed an epoch.</div></div>`;
+  // Prefer the server's notion of the active run; falling back to the last
+  // element is only safe while every run name sorts after its predecessors.
+  const run = (activeRun && t.runs.find(r => r.name === activeRun))
+              || t.runs[t.runs.length-1];
+  const ep = run.epochs;
+  const last = ep[ep.length-1];
+  const es = t.early_stop || {};
+  const best = Math.max(...ep.map(e=>e.el ?? -Infinity));
+  const since = es.since ?? 0, pat = es.patience;
+  const stCls = es.stopped ? "st-warn" : (pat && since >= Math.max(1,pat-1) ? "st-warn" : "st-good");
+
+  const kpi = `
+    <div class="kpi">
+      <div><div class="v">${fmt(last.el)}</div><div class="k">E[L] latest</div></div>
+      <div><div class="v">${fmt(best)}</div><div class="k">E[L] best</div></div>
+      <div><div class="v">${pct(last.accept_rate)}</div><div class="k">accept rate</div></div>
+      <div><div class="v">${pct(last.full_acc)}</div><div class="k">full-block acc</div></div>
+      <div><div class="v">${fmt(last.loss,3)}</div><div class="k">val loss</div></div>
+      <div><div class="v ${stCls}">${pat ? since+" / "+pat : "–"}</div>
+           <div class="k">epochs w/o gain</div></div>
+    </div>
+    <div class="note">run <b>${run.name}</b> · ${ep.length} epochs
+      ${run.state && run.state.global_step ? "· global_step "+run.state.global_step : ""}
+      ${es.stopped ? '· <span class="st-warn">early stopped</span>' : ""}
+      ${pat ? '· patience '+pat : '· early stopping off'}</div>`;
+
+  return `
+  <div class="panel"><h2>Training — early-stopping metric E[L]</h2>
+    ${kpi}
+    ${epochBarHTML(run)}
+    <div class="note">E[L] = <span class="mono">accept_len_epoch</span>, expected tokens
+      accepted per target call, measured on the held-out split. Higher is better.</div>
+    ${lineChart([{name:"E[L]", color:"#4c9be8",
+                  points: ep.filter(e=>e.el!=null).map(e=>({x:e.epoch,y:e.el}))}],
+                {yfmt:v=>v.toFixed(2)})}
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="panel"><h2>Accuracy / loss</h2>
+      <div class="note">held-out split, per epoch</div>
+      ${lineChart([
+        {name:"accept rate", color:"#3fb950",
+         points: ep.filter(e=>e.accept_rate!=null).map(e=>({x:e.epoch,y:e.accept_rate}))},
+        {name:"full-block acc", color:"#d29922",
+         points: ep.filter(e=>e.full_acc!=null).map(e=>({x:e.epoch,y:e.full_acc}))}],
+        {yfmt:v=>v.toFixed(2)})}
+      ${lineChart([{name:"val loss", color:"#f0883e",
+                    points: ep.filter(e=>e.loss!=null).map(e=>({x:e.epoch,y:e.loss}))}],
+                  {yfmt:v=>v.toFixed(2),h:180})}
+    </div>
+    <div class="panel"><h2>Confidence head</h2>
+      <div class="note">predicted mean acceptance vs the rate actually realised.
+        The gap widening is the head failing to transfer across the
+        source-disjoint split, not the head breaking.</div>
+      ${lineChart([
+        {name:"predicted mean", color:"#7b6fd0",
+         points: ep.filter(e=>e.conf_pred!=null).map(e=>({x:e.epoch,y:e.conf_pred}))},
+        {name:"actual accept rate", color:"#3fb950",
+         points: ep.filter(e=>e.accept_rate!=null).map(e=>({x:e.epoch,y:e.accept_rate}))}],
+        {yfmt:v=>v.toFixed(2),h:180})}
+      ${lineChart([{name:"calibration error (MAE)", color:"#f0883e",
+                    points: ep.filter(e=>e.conf_err!=null).map(e=>({x:e.epoch,y:e.conf_err}))}],
+                  {yfmt:v=>v.toFixed(3),h:180})}
+    </div>
+    <div class="panel"><h2>Per-position acceptance (latest epoch)</h2>
+      <div class="note">slot 0 is the anchor; DSpark's Markov head exists to keep
+        the later slots from collapsing.</div>
+      ${barChart(last.positions||[], "slot")}
+    </div>
+  </div>`;
+}
+
+function progressHTML(prog){
+  if(!prog || !prog.length) return "";
+  const loss = prog.map(p=>({x:p.step,y:p.loss}));
+  const acc  = prog.filter(p=>p.acc!=null).map(p=>({x:p.step,y:p.acc}));
+  const S = smoothSpan();
+  const ctl = `<div style="display:flex;align-items:center;gap:10px;margin:6px 0 2px">
+      <span class="sub">smoothing</span>
+      <input type="range" min="1" max="60" step="1" value="${S}"
+             oninput="setSmooth(this.value)" style="width:190px">
+      <span class="sub mono">span ${S} pts (EMA)</span>
+      <button onclick="setSmooth(1)" class="pill" style="cursor:pointer">raw</button>
+      <button onclick="setSmooth(25)" class="pill" style="cursor:pointer">25</button>
+      <button onclick="setSmooth(60)" class="pill" style="cursor:pointer">60</button>
+    </div>`;
+  const two = (raw, color, name) => lineChart([
+      {name:name+" (raw)", color:color, points:raw, width:1.2, opacity:.30, dots:false},
+      {name:name+" (EMA "+S+")", color:color, points:ema(raw,S), width:2.6, dots:false},
+    ], {yfmt:v=>v.toFixed(2), xlabel:"global step", h:190});
+  return `<div class="panel" style="margin-top:16px">
+    <h2>Live training progress</h2>
+    <div class="note">step-level, parsed from the trainer log (${prog.length} points).
+      This moves continuously; the E[L] panel above only updates once per epoch.
+      The faint line is the raw series, the bold line is an exponential moving
+      average over the last <b>${S}</b> plotted points — the raw trace is genuinely
+      this noisy, so read the bold one.</div>
+    ${ctl}
+    <div class="grid g2">
+      <div>${two(loss, "#f0883e", "train loss")}</div>
+      <div>${two(acc, "#3fb950", "train accept rate")}</div>
+    </div></div>`;
+}
+
+/* ---------- render ---------- */
+async function tick(){
+  try{
+    const d = await fetchData();
+    stamp(d.generated);
+    document.getElementById("root").innerHTML =
+      trainingHTML(d.training, d.active_run) + progressHTML(d.progress);
+  }catch(e){
+    document.getElementById("root").innerHTML =
+      `<div class="panel"><div class="empty">failed to load data.json: ${e}</div></div>`;
+  }
+}
+tick();
+setInterval(tick, 15000);
+</script>
+</body>
+</html>
