@@ -1,12 +1,39 @@
 # Qwen3-0.6B-DSpark
 
+[![Model on HF](https://img.shields.io/badge/%F0%9F%A4%97%20Model-wkk66d%2FQwen3--0.6B--DSpark-yellow)](https://huggingface.co/wkk66d/Qwen3-0.6B-DSpark)
+[![base model](https://img.shields.io/badge/base%20model-Qwen3--0.6B-blue)](https://huggingface.co/Qwen/Qwen3-0.6B)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Training pipeline and trained weights for a **DSpark-style speculative-decoding
 drafter** built from scratch for [`Qwen/Qwen3-0.6B`](https://huggingface.co/Qwen/Qwen3-0.6B).
 
 This repository covers the model side only: how the corpus was built, how the
 target's hidden states were extracted, how the drafter was trained, how it is
 converted for inference, and the dashboard used to watch training. It ships the
-finished drafter in `weights/`.
+finished drafter in `weights/` and mirrors it on the Hub.
+
+## Released model
+
+The trained drafter is published at
+**[🤗 wkk66d/Qwen3-0.6B-DSpark](https://huggingface.co/wkk66d/Qwen3-0.6B-DSpark)**
+(128.1 M params, 244 MiB bf16, 40 tensors). The Hub copy and
+`weights/dspark_06b_engine_r4/` here are the same checkpoint.
+
+```python
+from speculators import SpeculatorModel
+
+drafter = SpeculatorModel.from_pretrained("wkk66d/Qwen3-0.6B-DSpark")
+```
+
+The published `config.json` names its verifier as `Qwen/Qwen3-0.6B` rather than a
+local path, so it loads unchanged on any machine.
+
+Measured on a single RTX 4070, GPQA Diamond, 6000-token thinking budget:
+
+| | tok/s | speed-up |
+|---|---|---|
+| `Qwen/Qwen3-0.6B` alone | 33.1 | 1.00× |
+| + this drafter (K=7, verified) | **67.5** | **2.04×** |
 
 ---
 
@@ -169,8 +196,16 @@ scripts/convert_spec_to_engine.py  trained checkpoint -> inference format
 scripts/build_dashboard.py       dashboard data collector
 scripts/serve_dashboard.py       dashboard server
 web/                             training dashboard (no build step, no CDN)
-weights/dspark_06b_engine_r4/    trained drafter (Git LFS)
+weights/dspark_06b_engine_r4/    trained drafter (Git LFS), mirrored on the Hub
 ```
+
+## Files on the Hub
+
+| file | |
+|---|---|
+| `model.safetensors` | the drafter, 244 MiB, LFS |
+| `config.json` | `DSparkDraftModel`, taps [2,14,25], block 8, Markov rank 256 |
+| `README.md` | model card |
 
 ## Credit
 
